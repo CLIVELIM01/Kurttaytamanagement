@@ -81,3 +81,12 @@ Key Performance Indicators (KPIs
 5. User satisfaction and feedback from ISD.  
 ---
 Installation Guide
+spaCy Documentation: https://spacy.io/ 
+
+Streamlit Documentation: https://docs.streamlit.io/ 
+
+NetworkX Documentation: https://networkx.org/ 
+
+Matplotlib Documentation: https://matplotlib.org/ 
+
+PyPDF2 Documentation: https://pypi.org/project/PyPDF2/ 
