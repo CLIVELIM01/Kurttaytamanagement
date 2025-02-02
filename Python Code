@@ -1,0 +1,402 @@
+import streamlit as st
+import os
+import pandas as pd
+import PyPDF2
+import spacy
+from spacy.matcher import Matcher
+import networkx as nx
+import matplotlib.pyplot as plt
+from io import BytesIO
+
+# Load spaCy model
+nlp = spacy.load("en_core_web_sm")
+
+# Define entity and relationship extraction functions
+def extract_entities(text):
+    doc = nlp(text)
+    entities = [(ent.text, ent.label_) for ent in doc.ents]
+    return entities
+
+def extract_relationships(text):
+    doc = nlp(text)
+    relationships = []
+
+    # 1. Using Matcher for specific patterns (improved)
+    matcher = Matcher(nlp.vocab)
+
+    # More general patterns (examples - customize these)
+    pattern1 = [{"POS": "PROPN", "OP":"?"}, {"LEMMA": "attack"}, {"POS": "PROPN", "OP":"?"}] #attack by/on
+    pattern2 = [{"POS": "PROPN", "OP":"?"}, {"LEMMA": "threat"}, {"POS": "PROPN", "OP":"?"}] #threat by/to
+    pattern3 = [{"POS": "PROPN", "OP":"?"}, {"LEMMA": "breach"}, {"POS": "PROPN", "OP":"?"}] #breach by/of
+    pattern4 = [{"LEMMA": "corrupt"}, {"POS": "PROPN", "OP":"?"}] #corrupt practices by
+    pattern5 = [{"LEMMA": "irregularity"}, {"POS": "PROPN", "OP":"?"}] #irregularities in
+    pattern6 = [{"POS": "PROPN", "OP":"?"}, {"LEMMA": "exploit"}, {"POS": "PROPN", "OP":"?"}] #exploit vulnerability
+    pattern7 = [{"POS": "PROPN", "OP":"?"}, {"LEMMA": "vulnerab*"}, {"POS": "PROPN", "OP":"?"}] #vulnerability of/in/by (using wildcard)
+    pattern8 = [{"POS": "PROPN", "OP":"?"}, {"LEMMA": "compromise"}, {"POS": "PROPN", "OP":"?"}] #data compromise by/of
+    pattern9 = [{"LEMMA": "fraud"}, {"POS": "PROPN", "OP":"?"}] #fraud by/against
+    pattern10 = [{"LEMMA": "embezzle*"}, {"POS": "PROPN", "OP":"?"}] #embezzlement by
+    pattern11 = [{"LEMMA": "misconduct"}, {"POS": "PROPN", "OP":"?"}] #misconduct by
+    pattern12 = [{"LEMMA": "negligence"}, {"POS": "PROPN", "OP":"?"}] #negligence by
+    pattern13 = [{"LEMMA": "violation"}, {"POS": "PROPN", "OP":"?"}] #regulation violation by
+    pattern14 = [{"LEMMA": "illegal"}, {"POS": "NOUN"}] #illegal activity/practice
+    pattern15 = [{"LEMMA": "unauthoriz*"}, {"POS": "VERB"}] #unauthorized access/use
+    pattern16 = [{"LEMMA": "access"}, {"POS": "ADJ"}, {"LEMMA": "to"}, {"POS": "PROPN", "OP":"?"}] #restricted access to
+    pattern17 = [{"LEMMA": "leak"}, {"POS": "NOUN"}, {"LEMMA": "of"}, {"POS": "PROPN", "OP":"?"}] #data leak of
+    pattern18 = [{"LEMMA": "mismanag*"}, {"POS": "PROPN", "OP":"?"}] #mismanagement by
+    pattern19 = [{"LEMMA": "breach"}, {"POS": "NOUN"}, {"LEMMA": "of"}, {"POS": "PROPN", "OP":"?"}] #breach of contract by
+    pattern20 = [{"LEMMA": "falsif*"}, {"POS": "NOUN"}] #falsification of records
+    pattern21 = [{"LEMMA": "forg*"}, {"POS": "NOUN"}] #forgery of documents
+    pattern22 = [{"LEMMA": "decept*"}, {"POS": "NOUN"}] #deception in business dealings
+    pattern23 = [{"LEMMA": "dishonest*"}, {"POS": "ADJ"}] #dishonest practices by
+    pattern24 = [{"LEMMA": "unethic*"}, {"POS": "ADJ"}] #unethical behavior by
+
+    matcher.add("risk_relationship", [pattern1, pattern2, pattern3, pattern4, pattern5, pattern6, pattern7, pattern8, pattern9, pattern10, pattern11, pattern12, pattern13, pattern14, pattern15, pattern16, pattern17, pattern18, pattern19, pattern20, pattern21, pattern22, pattern23, pattern24])
+    matches = matcher(doc)
+    for match_id, start, end in matches:
+        span = doc[start:end]
+        relationships.append(span.text)
+
+    # 2. Dependency Parsing for more general relationships
+    for token in doc:
+        # Look for verbs that might indicate a relationship
+        if token.pos_ == "VERB":
+            subject = None
+            object_ = None
+            for child in token.children:
+                if child.dep_ == "nsubj" or child.dep_ == "nsubjpass":  # Subject of the verb
+                    subject = child.text
+                elif child.dep_ == "dobj" or child.dep_ == "pobj":  # Direct or prepositional object
+                    object_ = child.text
+
+            if subject and object_:
+                relationships.append(f"{subject} {token.text} {object_}")  # Form a relationship string
+
+    return relationships
+
+def process_pdf(pdf_path):
+    try:
+        with open(pdf_path, "rb") as f:
+            reader = PyPDF2.PdfReader(f)
+            num_pages = len(reader.pages)
+            text = ""
+            for i in range(num_pages):
+                page = reader.pages[i]
+                text += page.extract_text()
+            return text
+    except Exception as e:
+        st.error(f"Error processing PDF {pdf_path}: {e}")
+        return None
+
+def build_graph(entities, relationships):
+    graph = nx.Graph()
+    for entity, label in entities:
+        graph.add_node(entity, label=label)  # Add label as node attribute
+
+    for relationship in relationships:
+        parts = relationship.split()  # Split the relationship string
+        if len(parts) >= 3:  # At least two entities and one relationship word
+            entity1 = parts[0]
+            entity2 = parts[-1]
+            graph.add_edge(entity1, entity2, relation=relationship)  # Add relation as edge attribute
+    return graph
+
+def analyze_risk(text):
+    high_risk_keywords = [
+        "corruption", "irregularities", "fraud", "bribery", "embezzlement", "kickback", "conflict of interest", "misconduct",
+        "abuse of power", "illegal", "unlawful", "criminal", "violation", "non-compliance", "breach of contract", "misrepresentation",
+        "falsification", "forgery", "deception", "dishonesty", "unethical", "improper", "inappropriate", "negligence", "omission",
+        "mismanagement", "waste", "loss", "damage", "harm", "endangerment", "jeopardy", "threat", "risk", "vulnerability",
+        "exploit", "attack", "breach", "intrusion", "data loss", "ransomware", "malware", "phishing", "spearphishing", "DDoS",
+        "SQL injection", "XSS", "zero-day", "APT", "insider threat", "data exfiltration", "unauthorized access", "privilege escalation",
+        "rootkit", "backdoor", "trojan", "virus", "worm", "keylogger", "spyware", "adware", "botnet", "social engineering",
+        "manipulation", "coercion", "theft", "sabotage", "espionage", "terrorism", "cyber warfare", "physical attack",
+        "bomb threat", "active shooter", "kidnapping", "hijacking", "extortion", "blackmail", "harassment", "stalking", "doxing",
+        "reputational damage", "financial loss", "legal liability", "regulatory violation", "sensitive information disclosure",
+        "intellectual property theft", "trade secret theft", "critical infrastructure attack", "system outage", "service disruption",
+        "emergency situation", "crisis", "disaster", "catastrophe", "severe impact", "critical", "failure", "immediate", "action required",
+        "urgent attention needed", "high priority", "escalate", "mitigate", "remediate", "contain", "investigate", "prevent",
+        "detect", "respond", "recover", "protect", "secure", "audit", "inspection", "investigation", "inquiry", "review", "analysis",
+        "assessment", "evaluation", "finding", "conclusion", "recommendation", "report", "evidence", "allegation", "claim",
+        "complaint", "grievance", "dispute", "controversy", "scandal", "cover-up", "whitewash", "misconduct", "wrongdoing",
+        "malfeasance", "nonfeasance", "dereliction of duty", "conflict of interest", "breach of fiduciary duty", "insider trading",
+        "market manipulation", "money laundering", "tax evasion", "fraudulent conveyance", "bankruptcy fraud", "insurance fraud",
+        "securities fraud", "wire fraud", "mail fraud", "identity theft", "cyberstalking", "cyberbullying", "hate speech",
+        "incitement", "defamation", "libel", "slander", "invasion of privacy", "emotional distress", "intentional", "infliction of", "negligent", "infliction of emotional", "distress", "false", "imprisonment", "assault", "battery", "kidnapping",
+        "hijacking", "hostage taking", "torture", "cruel and unusual punishment", "genocide", "war crimes", "crimes against humanity",
+        "terrorism", "sedition", "treason", "espionage", "sabotage", "cyber warfare", "economic espionage", "industrial espionage",
+        "trade secret theft", "intellectual property theft", "copyright infringement", "patent infringement", "trademark infringement",
+        "counterfeiting", "piracy", "plagiarism", "defamation", "libel", "slander", "invasion of privacy", "emotional distress",
+        "intentional infliction of emotional distress", "negligent infliction of emotional distress", "false imprisonment", "assault",
+        "battery", "kidnapping", "hijacking", "hostage taking", "torture", "cruel and unusual punishment", "genocide", "war crimes",
+        "crimes against humanity", "terrorism", "sedition", "treason", "espionage", "sabotage", "cyber warfare",
+        "economic espionage", "industrial espionage", "trade secret theft", "intellectual property theft", "copyright infringement",
+        "patent infringement", "trademark infringement", "counterfeiting", "piracy", "plagiarism"
+    ]
+    medium_risk_keywords = [
+        "suspicious", "unusual", "anomalous", "irregular", "potential", "possible", "probable", "likely", "suspected", "reported",
+        "alleged", "claimed", "incident", "event", "occurrence", "situation", "circumstance", "factor", "indicator", "sign",
+        "symptom", "warning", "alert", "notification", "report", "analysis", "assessment", "evaluation", "review", "audit",
+        "inspection", "investigation", "inquiry", "concern", "issue", "problem", "challenge", "difficulty", "weakness", "flaw",
+        "gap", "deficiency", "vulnerability (potential)", "exposure", "risk", "threat (potential)", "breach (potential)",
+        "compromise (potential)", "unauthorized", "access (potential)", "activity", "behavior", "communication", "contact",
+        "interaction", "relationship", "association", "connection", "link", "network", "system", "device", "account",
+        "credential", "password", "login", "attempt", "failure", "error", "exception", "anomaly", "deviation", "variance",
+        "discrepancy", "inconsistency", "irregularity", "questionable", "doubtful", "uncertain", "ambiguous", "unclear",
+        "incomplete", "preliminary", "tentative", "subject to change", "under review", "pending", "ongoing", "current", "recent",
+        "past", "future", "short-term", "long-term", "low priority", "monitor", "observe", "track", "document", "record", "report",
+        "analyze", "assess", "evaluate", "review", "discuss", "communicate", "collaborate", "consult", "advise", "recommend",
+        "implement", "improve", "enhance", "strengthen", "secure", "protect", "safeguard", "prevent", "deter", "mitigate",
+        "reduce", "minimize", "control", "manage", "investigate", "inquiry", "examination", "hearing", "trial", "litigation",
+        "lawsuit", "legal action", "court case", "settlement", "arbitration", "mediation", "negotiation", "compliance",
+        "regulation", "policy", "procedure", "guideline", "standard", "best practice", "due diligence", "risk management",
+        "security", "protection", "safeguard", "prevention", "deterrence", "mitigation", "remediation", "containment",
+        "recovery", "business continuity", "disaster recovery", "incident response", "vulnerability management", "threat intelligence",
+        "security awareness", "training", "education", "communication", "collaboration", "consultation", "advice", "recommendation",
+        "implementation", "improvement", "enhancement", "strengthening", "secure", "protect", "safeguard", "prevent", "deter",
+        "mitigate", "reduce", "minimize", "control", "manage", "monitor", "observe", "track", "report", "discuss", "communicate",
+        "collaborate", "consult", "advise", "recommend", "implement", "improve", "enhance", "strengthen", "secure", "protect",
+        "safeguard", "prevent", "deter", "mitigate", "reduce", "minimize", "control", "manage"
+    ]
+    low_risk_keywords = [
+        "routine", "regular", "scheduled", "periodic", "frequent", "occasional", "infrequent", "rare", "normal"
+    ]
+
+    doc = nlp(text)
+    high_risk_count = 0
+    medium_risk_count = 0
+    low_risk_count = 0
+
+    for token in doc:
+        if token.pos_ == "PUNCT" or token.is_space:  # Skip punctuation and spaces
+            continue
+
+        keyword = token.lemma_.lower()  # Use lemma (base form) for better matching
+
+        if keyword in high_risk_keywords:
+            high_risk_count += 1
+        elif keyword in medium_risk_keywords:
+            medium_risk_count += 1
+        elif keyword in low_risk_keywords:
+            low_risk_count += 1
+
+    total_tokens = len(list(filter(lambda x: x.pos_ != "PUNCT" and not x.is_space, doc)))  # Count tokens excluding punctuation and spaces
+
+    if total_tokens == 0:
+        return "Low Risk"
+
+    high_risk_score = (high_risk_count / total_tokens) * 100
+    medium_risk_score = (medium_risk_count / total_tokens) * 100
+    low_risk_score = (low_risk_count / total_tokens) * 100
+
+    high_risk_weight = 5
+    medium_risk_weight = 2
+    low_risk_weight = 1
+
+    weighted_score = (high_risk_score * high_risk_weight + medium_risk_score * medium_risk_weight + low_risk_score * low_risk_weight) / (high_risk_weight + medium_risk_weight + low_risk_weight)
+
+    if weighted_score > 2.5:
+        return "High Risk - " + str(round(weighted_score, 2))
+    elif weighted_score > 1.5:
+        return "Medium Risk - " + str(round(weighted_score, 2))
+    else:
+        return "Low Risk - " + str(round(weighted_score, 2))
+
+def generate_summary(entities, relationships, risk_level):
+    summary = f"This document has been classified as **{risk_level}**. "
+    summary += "Key entities identified include: "
+    entity_counts = {}
+    for entity, label in entities:
+        if entity in entity_counts:
+            entity_counts[entity] += 1
+        else:
+            entity_counts[entity] = 1
+    top_entities = sorted(entity_counts.items(), key=lambda x: x[1], reverse=True)[:5]  # Top 5 entities
+    summary += ", ".join([f"{entity} ({count})" for entity, count in top_entities]) + ". "
+
+    if relationships:
+        print()
+        summary += "Key relationships identified include: "
+        summary += ", ".join(relationships[:5]) + ". "  # Top 5 relationships
+    else:
+        summary += "No significant relationships were identified. "
+
+    return summary
+
+# Streamlit App
+st.title("Kurt Tayta Analytics Tool")
+
+pdf_folder = st.text_input("Enter the path to the folder containing PDFs")
+
+if pdf_folder:
+    pdf_files = [f for f in os.listdir(pdf_folder) if f.endswith(".pdf")]
+    all_text = ""
+    all_entities = []
+    all_relationships = []
+    file_risks = {}
+    all_file_data = []  # List to store data for all files
+
+    for pdf_file in pdf_files:
+        pdf_path = os.path.join(pdf_folder, pdf_file)
+        text = process_pdf(pdf_path)
+        if text:
+            entities = extract_entities(text)
+            relationships = extract_relationships(text)
+
+            all_entities.extend(entities)
+            all_relationships.extend(relationships)
+
+            risk_level = analyze_risk(text)
+            file_risks[pdf_file] = risk_level
+            st.write(f"Risk Level for {pdf_file}: {risk_level}")
+
+            # Generate summary for the file
+            summary = generate_summary(entities, relationships, risk_level)
+            st.write(f"**Summary for {pdf_file}:** {summary}")
+
+            # Store data for the current file
+            file_data = {
+                "file": pdf_file,
+                "entities": entities,
+                "relationships": relationships,
+                "risk_level": risk_level,
+                "summary": summary
+            }
+            all_file_data.append(file_data)
+
+            # Generate and display relationship map for high-risk files
+            if "High Risk" in risk_level:
+                st.write(f"**Relationship Map for {pdf_file}:**")
+                graph = build_graph(entities, relationships)
+                if graph.number_of_nodes() > 0:
+                    fig, ax = plt.subplots(figsize=(10, 8))
+                    pos = nx.spring_layout(graph, k=0.3, iterations=50)
+                    nx.draw(graph, pos, with_labels=True, node_size=2000, node_color="skyblue", font_size=10, ax=ax, edge_color="gray", arrowstyle='-|>', arrowsize=20)
+                    edge_labels = nx.get_edge_attributes(graph, 'relation')
+                    nx.draw_networkx_edge_labels(graph, pos, edge_labels=edge_labels, font_size=8, ax=ax)
+                    st.pyplot(fig)
+
+                    # Download graph image
+                    buf = BytesIO()
+                    fig.savefig(buf, format="png")
+                    st.download_button(f"Download Relationship Map for {pdf_file}", buf, file_name=f"{pdf_file}_relationship_map.png", mime="image/png")
+                else:
+                    st.write("No relationships were found to build the graph.")
+
+    # Overall Risk Analysis
+    risk_levels = [file_data["risk_level"] for file_data in all_file_data]
+
+    numerical_risks = []
+    for risk in risk_levels:
+        if risk.startswith("High Risk"):
+            numerical_risks.append(3)
+        elif risk.startswith("Medium Risk"):
+            numerical_risks.append(2)
+        elif risk.startswith("Low Risk"):
+            numerical_risks.append(1)
+        else:
+            st.warning(f"Invalid risk level found: {risk}. Skipping for overall calculation.")
+
+    if numerical_risks:
+        average_risk = sum(numerical_risks) / len(numerical_risks)
+
+        # Calculate percentage score relative to the maximum risk (3)
+        percentage_score = (average_risk / 3) * 100
+
+        if average_risk >= 2.5:
+            overall_risk_label = "High Risk"
+        elif average_risk >= 1.5:
+            overall_risk_label = "Medium Risk"
+        else:
+            overall_risk_label = "Low Risk"
+
+        overall_risk_level = f"{overall_risk_label} ({percentage_score:.1f}%)"  # Combined label and percentage
+
+        st.write(f"Overall Risk Level: {overall_risk_level}")
+
+        # Add percentage to individual file risk levels as well
+        for file_data in all_file_data:
+            risk_label = file_data["risk_level"].split(" - ")[0]  # Extract the risk label (High, Medium, Low)
+            numerical_risk = 0
+            if risk_label == "High Risk":
+                numerical_risk = 3
+            elif risk_label == "Medium Risk":
+                numerical_risk = 2
+            elif risk_label == "Low Risk":
+                numerical_risk = 1
+
+            file_percentage_score = (numerical_risk / 3) * 100
+            file_data["risk_level"] = f"{risk_label} ({file_percentage_score:.1f}%)"  # Update risk level in file_data
+
+            st.write(f"Risk Level for {file_data['file']}: {file_data['risk_level']}") #updated risk level with percentage
+            
+    ranked_files = sorted(all_file_data, key=lambda x: (
+        3 if x["risk_level"].startswith("High") else
+        2 if x["risk_level"].startswith("Medium") else
+        1 if x["risk_level"].startswith("Low") else 0,  # Handle invalid risk levels
+        float(x["risk_level"].split("(")[1].split("%)")[0]) if "(" in x["risk_level"] else 0 #extract percentage for secondary sort
+    ), reverse=True)
+
+    st.subheader("Ranked Risk Levels (Highest to Lowest)")
+    for file_data in ranked_files:
+        st.write(f"Risk Level for {file_data['file']}: {file_data['risk_level']}")
+
+        # --- Risk Level Distribution Chart ---
+    risk_counts = {  # Initialize counts for each risk level
+        "High Risk": 0,
+        "Medium Risk": 0,
+        "Low Risk": 0,
+    }
+
+    for file_data in all_file_data:  # Count occurrences of each risk level
+        risk_label = file_data["risk_level"].split("(")[0].strip()  # Extract risk label
+        risk_counts[risk_label] += 1
+
+    # Create bar chart
+    labels = list(risk_counts.keys())
+    counts = list(risk_counts.values())
+
+    fig, ax = plt.subplots()  # Create plot and set axis
+    ax.bar(labels, counts, color=['red', 'orange', 'green'])  # Use color coded bars
+
+    # Add labels and title
+    plt.xlabel("Risk Level")
+    plt.ylabel("Number of Files")
+    plt.title("Risk Level Distribution")
+
+    st.subheader("Risk Level Distribution")  # Subheader for the chart
+    st.pyplot(fig)  # Display chart in Streamlit
+
+
+    # Download Extracted Data (including file information)
+    all_data_to_download = []
+    for file_data in all_file_data:
+        for entity_text, entity_label in file_data["entities"]:
+            all_data_to_download.append({
+                "file": file_data["file"],
+                "entity_text": entity_text,
+                "entity_label": entity_label,
+                "relationship": None,  # Placeholder for entity rows
+                "risk_level": file_data["risk_level"],
+                "summary": file_data["summary"]
+            })
+        for relationship in file_data["relationships"]:
+            all_data_to_download.append({
+                "file": file_data["file"],
+                "entity_text": None,  # Placeholder for relationship rows
+                "entity_label": None,  # Placeholder for relationship rows
+                "relationship": relationship,
+                "risk_level": file_data["risk_level"],
+                "summary": file_data["summary"]
+            })
+
+    df_all_data = pd.DataFrame(all_data_to_download)
+    csv_all_data = df_all_data.to_csv(index=False).encode('utf-8')
+    st.download_button(
+        label="Download All Extracted Data (CSV)",
+        data=csv_all_data,
+        file_name='all_extracted_data.csv',
+        mime='text/csv',
+    )
+
+else:
+    st.write("Please provide path to the folder containing PDF reports.")
